@@ -58,9 +58,7 @@ async def gpt_answer_receive(answer: str):
 @app.on_message()
 async def listen_for_gpt_answers(client, message: Message):
     global last_message
-    if message == '''Контекст диалога (память бота) превышает 20000 токенов. Каждый запрос дополнительно списывает токены памяти с баланса!
-
-Если важна вся история диалога (при этом будет повышенный расход токенов) - нажми "Продолжить", если хочешь сэкономить и контекст предыдущих сообщений не важен - жми "Очистить историю диалога" - память сбросится и расход токенов пойдет снова с 0.''':
+    if "Контекст диалога" in message:
         return
     last_message = message
     if message.from_user.username == GPT_TELEGRAM_NAME_STR:
