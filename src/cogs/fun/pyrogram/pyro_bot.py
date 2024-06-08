@@ -43,7 +43,7 @@ async def send_gpt_message(message: str, use_moods: bool = False):
     if '1488' in message:
         message = f'Напиши случайный рассказ в случайном жанре. Используй слова из списка: {random.choices(list_of_wordds, k=3)}'
     await app.send_message(GPT_TELEGRAM_NAME_STR,
-                           f'{message} {random.choice(BOT_MOODS) if use_moods else ""}')
+                           f'{message + " .Не больше двух-трех предложений"} {random.choice(BOT_MOODS) if use_moods else ""}')
 
 
 async def gpt_answer_receive(answer: str):
@@ -58,7 +58,7 @@ async def gpt_answer_receive(answer: str):
 @app.on_message()
 async def listen_for_gpt_answers(client, message: Message):
     global last_message
-    if "Контекст диалога" in message:
+    if "Контекст диалога" in str(message.text):
         return
     last_message = message
     if message.from_user.username == GPT_TELEGRAM_NAME_STR:
