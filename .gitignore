@@ -9,6 +9,7 @@ __pycache__/
 .idea
 .env
 my_account.session
+credentials.json
 my_account.session-journal
 token.json
 src/google_docs/token.json
