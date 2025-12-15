@@ -9,7 +9,7 @@ from src.cogs.fun.fun_cog import Fun
 from src.cogs.fun.pyrogram.pyro_bot import app
 from src.cogs.help_cog import Help
 from src.cogs.rebrand.rebrand_cog import Rebrand
-from src.cogs.uno_cog import Uno
+# from src.cogs.uno_cog import Uno
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -20,7 +20,7 @@ bot = Bot(command_prefix='!', intents=intents)
 
 @bot.event
 async def on_ready():
-    await bot.add_cog(Uno(bot))
+#     await bot.add_cog(Uno(bot))
     await bot.add_cog(Help(bot))
     await bot.add_cog(Fun(bot))
     await bot.add_cog(Rebrand(bot))

@@ -170,6 +170,7 @@ class Fun(BaseCog):
         if random_number == 10 or self.on_game_counter == self.ON_GAME_GUARANTEE:
             await channel.send(f'Жёстко иду играть в {game}')
             gif_url = await get_first_tenor_gif_url(game)
+            print(gif_url)
             await channel.send(gif_url)
             self.on_game_counter = 0
 
