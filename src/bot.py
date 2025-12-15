@@ -19,5 +19,4 @@ class OgurecBot(commands.Bot):
         )
 
     async def on_ready(self):
-        print('123')
         logger.info(f"We have logged in as {self.user}")
