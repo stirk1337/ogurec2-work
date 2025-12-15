@@ -1,15 +1,31 @@
-import httpx
+import aiohttp
 
-from config import TENOR_API_KEY
-
-LIMIT = 1
+TENOR_API_URL = "https://tenor.googleapis.com/v2/search"
 
 
-async def get_first_tenor_gif_url(search: str) -> str:
-    async with httpx.AsyncClient() as client:
-        tenor_url = f'https://tenor.googleapis.com/v2/search?q={search}&key={TENOR_API_KEY}&limit={LIMIT}'
-        print(tenor_url)
-        response = await client.get(tenor_url)
- #       url = response.json()['results'][0]['media'][0]['mediumgif']['url']
-#        return url
-        return response.json()["results"][0]["media_formats"]["mediumgif"]["url"]
+class TenorClientError(Exception):
+    pass
+
+
+class TenorClient:
+    def __init__(self, api_key: str, session: aiohttp.ClientSession | None = None):
+        self.api_key = api_key
+        self.session = session
+
+    async def get_first_gif_url(self, query: str) -> str:
+        params = {
+            "q": query,
+            "key": self.api_key,
+            "limit": 1,
+        }
+
+        async with self.session.get(TENOR_API_URL, params=params) as resp:
+            if resp.status != 200:
+                raise TenorClientError(f"Tenor API error: {resp.status}")
+
+            data = await resp.json()
+
+        try:
+            return data["results"][0]["media_formats"]["mediumgif"]["url"]
+        except (KeyError, IndexError) as e:
+            raise TenorClientError("GIF not found") from e
