@@ -2,7 +2,7 @@ from datetime import datetime as dt
 
 from discord.ext import commands
 
-from src.utils import TIME_ZONE
+from ogurec.utils import TIME_ZONE
 
 
 class Utils(commands.Cog):

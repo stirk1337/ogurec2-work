@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from loguru import logger
 
-from src.config.settings import Settings
+from ogurec.config.settings import Settings
 
 
 class OgurecBot(commands.Bot):

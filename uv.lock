@@ -265,7 +265,7 @@ wheels = [
 [[package]]
 name = "ogurec"
 version = "3.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "discord-py" },

@@ -10,6 +10,11 @@ dependencies = [
     "pydantic-settings>=2.12.0",
 ]
 
+[project.scripts]
+ogurec = "ogurec.cmd.main:main"
+
+[tool.uv]
+package = true
 
 [tool.ruff]
 line-length = 120

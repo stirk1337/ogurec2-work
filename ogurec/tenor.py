@@ -8,9 +8,9 @@ class TenorClientError(Exception):
 
 
 class TenorClient:
-    def __init__(self, api_key: str, session: aiohttp.ClientSession | None = None):
+    def __init__(self, api_key: str):
         self.api_key = api_key
-        self.session = session
+        self.session = aiohttp.ClientSession()
 
     async def get_first_gif_url(self, query: str) -> str:
         params = {
