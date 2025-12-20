@@ -1,0 +1,473 @@
+import asyncio
+import random
+from datetime import datetime, timedelta
+from typing import Any
+
+import discord
+from discord import Message, app_commands
+from discord.ext import commands
+
+from ogurec.bot import OgurecBot
+from ogurec.chatgpt import GPTClient
+from ogurec.utils import get_random_sticker
+
+MESSAGE_RANDOM_RANGE = 450
+REACTION_RANDOM_RANGE = 650
+MESSAGE_GUARANTEE_LIMIT = 750
+HISTORY_TIMEOUT_MINUTES = 10
+
+BOT_MOODS = [
+    "Пиши как футболист",
+    "Пиши как программист",
+    "Пиши как гопник",
+    "Пиши с жестким негативом",
+    "Пиши как гопник с жестким негативом",
+    "Пиши положительно",
+    "Пиши как политик",
+    "Пиши как ведьмак",
+    "Пиши как геймер",
+    "Пиши как анимешник",
+    "Пиши как военный",
+    "Пиши как полицейский",
+    "Пиши с негативом",
+    "Пиши с жестким негативом",
+    "Пиши как певица",
+    "Пиши с негативом",
+    "Пиши как агресивный гопник",
+]
+
+
+class ConversationCog(commands.Cog):
+    def __init__(self, bot: OgurecBot, gpt_client: GPTClient):
+        self.bot = bot
+        self.message_counter = 0
+        self.gpt_client = gpt_client
+        # История разговоров по каналам: {channel_id: {"messages": [...], "last_activity": datetime}}
+        self.conversation_history: dict[int, dict[str, Any]] = {}
+        # Задачи для сброса истории
+        self.reset_tasks: dict[int, asyncio.Task] = {}
+        # Модели по каналам: {channel_id: model_name}
+        self.channel_models: dict[int, str] = {}
+
+    @staticmethod
+    def _roll(*values: int, max_value: int) -> bool:
+        return random.randint(1, max_value) in values
+
+    def _get_base_system_message(self, include_mood: bool = False, guild_name: str = None) -> dict:
+        """Базовое системное сообщение, которое всегда должно быть в начале истории."""
+        from datetime import datetime as dt
+        from ogurec.utils import TIME_ZONE
+        
+        now = dt.now(TIME_ZONE)
+        current_date = now.strftime("%d.%m.%Y %H:%M")
+        
+        content = "Ты Discord бот по имени Ogurec. Ты пишешь от 1 до 10 предложений за 1 ответ. "
+        content += f"Текущая дата и время: {current_date}. "
+        
+        if guild_name:
+            content += f"Название сервера: {guild_name}. "
+
+        if include_mood:
+            mood = random.choice(BOT_MOODS)
+            content += f" {mood}."
+
+        return {"role": "system", "content": content}
+
+    def _format_emoji_for_gpt(self, emoji) -> str:
+        """Форматирует эмодзи для GPT в формате Discord."""
+        if emoji.animated:
+            return f"<a:{emoji.name}:{emoji.id}>"
+        else:
+            return f"<:{emoji.name}:{emoji.id}>"
+
+    def _get_user_info_for_gpt(self, message: Message) -> str:
+        """Получить информацию о пользователе для GPT."""
+        if not message.guild or not message.author:
+            return ""
+        
+        user = message.author
+        info_parts = []
+        
+        # Основная информация
+        info_parts.append(f"Тебе пишет пользователь: {user.display_name} (никнейм: {user.name})")
+        
+        # Роли пользователя (кроме @everyone)
+        roles = [role.name for role in user.roles if role.name != "@everyone" and not role.is_bot_managed()]
+        if roles:
+            info_parts.append(f"Роли пользователя: {', '.join(roles)}")
+        
+        # Активность пользователя (играет, стримит и т.д.)
+        if user.activity:
+            if isinstance(user.activity, discord.Game):
+                info_parts.append(f"Сейчас играет в: {user.activity.name}")
+            elif isinstance(user.activity, discord.Streaming):
+                info_parts.append(f"Стримит: {user.activity.name}")
+            elif isinstance(user.activity, discord.CustomActivity):
+                info_parts.append(f"Кастомный статус: {user.activity.name}")
+        
+        return ". ".join(info_parts) + ". Используй эту информацию для более персонализированного и веселого ответа."
+
+    def _get_emojis_system_message(self, guild) -> dict:
+        """Создает системное сообщение со списком доступных эмодзи на сервере."""
+        if not guild or not guild.emojis:
+            return None
+
+        emoji_list = [self._format_emoji_for_gpt(emoji) for emoji in guild.emojis]
+        emoji_text = ", ".join(emoji_list)
+
+        return {
+            "role": "system",
+            "content": (
+                f"Доступные эмодзи на этом сервере: {emoji_text}. "
+                "Ты можешь использовать ТОЛЬКО эти эмодзи в своих ответах. "
+                "НЕ используй обычные Unicode эмодзи, используй только эмодзи с сервера в формате <:name:id> или <a:name:id>."
+            ),
+        }
+
+    def _get_channel_history(self, channel_id: int) -> list[dict]:
+        """Получить историю разговора для канала."""
+        if channel_id not in self.conversation_history:
+            self.conversation_history[channel_id] = {"messages": [], "last_activity": datetime.now()}
+        return self.conversation_history[channel_id]["messages"]
+
+    def get_channel_history(self, channel_id: int) -> list[dict]:
+        """Публичный метод для получения истории разговора для канала."""
+        return self._get_channel_history(channel_id)
+
+    def ensure_system_messages(self, channel_id: int, guild, is_first_user_message: bool = False) -> None:
+        """Публичный метод для инициализации системных сообщений."""
+        self._ensure_system_messages(channel_id, guild, is_first_user_message)
+
+    def _ensure_system_messages(self, channel_id: int, guild, is_first_user_message: bool = False) -> None:
+        """Убедиться, что в истории есть необходимые системные сообщения."""
+        history = self._get_channel_history(channel_id)
+
+        # Проверяем, есть ли уже системные сообщения
+        has_base_system = False
+        has_emojis_system = False
+
+        for msg in history:
+            if msg.get("role") == "system":
+                if "Ogurec" in msg.get("content", "") or "Ogurec Bot" in msg.get("content", ""):
+                    has_base_system = True
+                if "Доступные эмодзи" in msg.get("content", ""):
+                    has_emojis_system = True
+
+        # Добавляем базовое системное сообщение, если его нет
+        if not has_base_system:
+            # 30% шанс выбрать случайное поведение
+            include_mood = random.randint(1, 100) <= 30
+            guild_name = guild.name if guild else None
+            history.insert(0, self._get_base_system_message(include_mood=include_mood, guild_name=guild_name))
+
+        # Добавляем системное сообщение с эмодзи, если это первое пользовательское сообщение
+        if not has_emojis_system and guild and is_first_user_message:
+            emoji_msg = self._get_emojis_system_message(guild)
+            if emoji_msg:
+                # Вставляем после базового системного сообщения
+                base_index = next(
+                    (
+                        i
+                        for i, msg in enumerate(history)
+                        if msg.get("role") == "system" and "Ogurec Bot" in msg.get("content", "")
+                    ),
+                    len(history),
+                )
+                history.insert(base_index + 1, emoji_msg)
+
+    def _get_messages_for_gpt(self, channel_id: int, guild, is_first_user_message: bool = False) -> list[dict]:
+        """Получить список сообщений для GPT с системными сообщениями в начале."""
+        # Убеждаемся, что системные сообщения есть в истории
+        self._ensure_system_messages(channel_id, guild, is_first_user_message)
+
+        # Возвращаем всю историю (системные сообщения уже там)
+        return self._get_channel_history(channel_id)
+
+    def _update_channel_activity(self, channel_id: int):
+        """Обновить время последней активности и отменить задачу сброса."""
+        if channel_id not in self.conversation_history:
+            self.conversation_history[channel_id] = {"messages": [], "last_activity": datetime.now()}
+        else:
+            self.conversation_history[channel_id]["last_activity"] = datetime.now()
+
+        # Отменить предыдущую задачу сброса, если она есть
+        if channel_id in self.reset_tasks:
+            self.reset_tasks[channel_id].cancel()
+
+        # Создать новую задачу для сброса через 10 минут
+        self.reset_tasks[channel_id] = asyncio.create_task(self._reset_history_after_timeout(channel_id))
+
+    async def _reset_history_after_timeout(self, channel_id: int):
+        """Сбросить историю разговора через 10 минут без активности."""
+        try:
+            await asyncio.sleep(HISTORY_TIMEOUT_MINUTES * 60)  # 10 минут в секундах
+
+            # Проверить, что прошло 10 минут с последней активности
+            if channel_id in self.conversation_history:
+                last_activity = self.conversation_history[channel_id]["last_activity"]
+                if datetime.now() - last_activity >= timedelta(minutes=HISTORY_TIMEOUT_MINUTES):
+                    del self.conversation_history[channel_id]
+                    if channel_id in self.reset_tasks:
+                        del self.reset_tasks[channel_id]
+        except asyncio.CancelledError:
+            # Задача была отменена из-за новой активности - это нормально
+            pass
+
+    def _add_user_message(self, channel_id: int, content: str):
+        """Добавить сообщение пользователя в историю."""
+        history = self._get_channel_history(channel_id)
+        history.append({"role": "user", "content": content})
+        self._update_channel_activity(channel_id)
+
+    def _add_assistant_message(self, channel_id: int, content: str):
+        """Добавить ответ бота в историю."""
+        history = self._get_channel_history(channel_id)
+        history.append({"role": "assistant", "content": content})
+        self._update_channel_activity(channel_id)
+
+    def add_assistant_message(self, channel_id: int, content: str):
+        """Публичный метод для добавления ответа бота в историю."""
+        self._add_assistant_message(channel_id, content)
+
+    async def reply_with_gpt(self, message: Message):
+        """
+        Отвечает на сообщение пользователя через GPT с эффектом "печатает по частям".
+        Запоминает историю разговора и сбрасывает её через час без активности.
+        """
+        if message.author.bot or not message.content.strip():
+            return
+
+        channel_id = message.channel.id
+
+        # Проверяем, будет ли это первое пользовательское сообщение (до добавления текущего)
+        history_before = self._get_channel_history(channel_id)
+        user_messages_count = sum(1 for msg in history_before if msg.get("role") == "user")
+        is_first_user_message = user_messages_count == 0
+
+        # Убеждаемся, что системные сообщения есть (включая эмодзи, если это первое сообщение)
+        self._ensure_system_messages(channel_id, message.guild, is_first_user_message)
+
+        # Добавить сообщение пользователя в историю
+        self._add_user_message(channel_id, message.content)
+
+        # Получить историю для этого канала с системными сообщениями
+        history = self._get_channel_history(channel_id)
+        
+        # С шансом 5% добавляем информацию о пользователе для более персонализированного ответа
+        if random.randint(1, 100) <= 5:
+            user_info = self._get_user_info_for_gpt(message)
+            if user_info:
+                # Добавляем информацию о пользователе как системное сообщение перед последним пользовательским
+                user_info_message = {"role": "system", "content": user_info}
+                # Вставляем перед последним сообщением пользователя
+                history.insert(-1, user_info_message)
+
+        # Отправляем пустое сообщение-плейсхолдер с ответом на сообщение пользователя
+        sent_message = await message.channel.send("💬 ...", reference=message)
+
+        content = ""
+        buffer = ""
+
+        try:
+            async with message.channel.typing():
+                model = self._get_channel_model(channel_id)
+                async for chunk in self.gpt_client.chat_completion(
+                    messages=history,
+                    model=model,
+                ):
+                    buffer += chunk
+
+                    # Редактируем сообщение раз в N символов, чтобы не спамить
+                    if len(buffer) > 50:
+                        content += buffer
+                        buffer = ""
+                        if len(content) > 2000:  # лимит Discord
+                            content = content[-2000:]
+                        await sent_message.edit(content=content)
+
+                # Финальный кусок
+                if buffer:
+                    content += buffer
+                    if len(content) > 2000:
+                        content = content[-2000:]
+                    await sent_message.edit(content=content)
+
+                # Добавить ответ бота в историю
+                if content:
+                    self._add_assistant_message(channel_id, content)
+
+                    # С шансом 5% отправить случайный стикер с сервера
+                    if message.guild and message.guild.stickers and random.randint(1, 100) <= 25:
+                        try:
+                            await message.channel.send(stickers=[get_random_sticker(message.guild)], reference=message)
+                        except Exception:
+                            # Игнорируем ошибки при отправке стикера
+                            pass
+
+        except Exception as e:
+            # На случай ошибки
+            await sent_message.edit(content=f"❌ Ошибка при генерации ответа: {e}")
+
+    async def reply_to_question(self, message: Message) -> bool:
+        if self.bot.user.mentioned_in(message) and message.content and message.content[-1] in {"?", "!", "."}:
+            await self.reply_with_gpt(message)
+            return True
+        return False
+
+    async def send_random_phrase(self, message: Message) -> bool:
+        if self._roll(1, 2, max_value=MESSAGE_RANDOM_RANGE):
+            await self.reply_with_gpt(message)
+            return True
+        return False
+
+    async def reply_to_ping(self, message: Message) -> bool:
+        if not self.bot.user.mentioned_in(message):
+            return False
+
+        if not message.guild:
+            return False
+
+        await self.reply_with_gpt(message)
+
+        return True
+
+    async def send_random_content(
+        self,
+        message: Message,
+        *,
+        emoji: bool,
+    ) -> bool:
+        trigger = self._roll(1, 2, max_value=MESSAGE_RANDOM_RANGE) or self.message_counter >= MESSAGE_GUARANTEE_LIMIT
+
+        if not trigger or self.bot.user.mentioned_in(message):
+            return False
+
+        if not message.guild:
+            return False
+
+        self.message_counter = 0
+        await self.reply_with_gpt(message)
+
+        return True
+
+    async def add_random_reaction(self, message: Message):
+        if not message.guild or not message.guild.emojis:
+            return
+
+        value = random.randint(1, REACTION_RANDOM_RANGE)
+        if 3 <= value <= 10:
+            await asyncio.sleep(random.randint(1, 4))
+            await message.add_reaction(random.choice(message.guild.emojis))
+
+    def _get_channel_model(self, channel_id: int) -> str:
+        """Получить модель для канала или вернуть дефолтную."""
+        return self.channel_models.get(channel_id, "openai/gpt-oss-120b")
+
+    @app_commands.command(description="Сбросить историю чата для этого канала")
+    async def reset_history(self, interaction: discord.Interaction):
+        """Сбросить историю разговора для текущего канала."""
+        channel_id = interaction.channel.id
+
+        # Удаляем историю
+        if channel_id in self.conversation_history:
+            del self.conversation_history[channel_id]
+
+        # Отменяем задачу сброса, если она есть
+        if channel_id in self.reset_tasks:
+            self.reset_tasks[channel_id].cancel()
+            del self.reset_tasks[channel_id]
+
+        await interaction.response.send_message("✅ История чата сброшена!", ephemeral=True)
+
+    @app_commands.command(description="Изменить модель GPT для этого канала")
+    @app_commands.describe(model="Модель для использования")
+    @app_commands.choices(
+        model=[
+            app_commands.Choice(name="GPT OSS 120B", value="openai/gpt-oss-120b"),
+            app_commands.Choice(name="GPT OSS 20B", value="openai/gpt-oss-20b"),
+            app_commands.Choice(name="GPT OSS Safeguard 20B", value="openai/gpt-oss-safeguard-20b"),
+            app_commands.Choice(name="Qwen 3 32B", value="qwen/qwen3-32b"),
+            app_commands.Choice(name="Llama 3.1 8B Instant", value="llama-3.1-8b-instant"),
+            app_commands.Choice(name="Llama 3.3 70B Versatile", value="llama-3.3-70b-versatile"),
+            app_commands.Choice(name="Llama 4 Maverick 17B", value="meta-llama/llama-4-maverick-17b-128e-instruct"),
+            app_commands.Choice(name="Llama 4 Scout 17B", value="meta-llama/llama-4-scout-17b-16e-instruct"),
+            app_commands.Choice(name="Llama Guard 4 12B", value="meta-llama/llama-guard-4-12b"),
+            app_commands.Choice(name="Llama Prompt Guard 2 22M", value="meta-llama/llama-prompt-guard-2-22m"),
+            app_commands.Choice(name="Llama Prompt Guard 2 86M", value="meta-llama/llama-prompt-guard-2-86m"),
+            app_commands.Choice(name="Kimi K2 Instruct", value="moonshotai/kimi-k2-instruct"),
+            app_commands.Choice(name="Kimi K2 Instruct 0905", value="moonshotai/kimi-k2-instruct-0905"),
+            app_commands.Choice(name="Allam 2 7B", value="allam-2-7b"),
+            app_commands.Choice(name="Orpheus Arabic Saudi", value="canopylabs/orpheus-arabic-saudi"),
+            app_commands.Choice(name="Groq Compound", value="groq/compound"),
+            app_commands.Choice(name="Groq Compound Mini", value="groq/compound-mini"),
+        ]
+    )
+    async def set_model(self, interaction: discord.Interaction, model: str):
+        """Установить модель GPT для текущего канала."""
+        channel_id = interaction.channel.id
+        self.channel_models[channel_id] = model
+
+        model_display_name = self._get_model_display_name(model)
+
+        await interaction.response.send_message(
+            f"✅ Модель для этого канала изменена на: **{model_display_name}**", ephemeral=True
+        )
+
+    def _get_model_display_name(self, model: str) -> str:
+        """Получить отображаемое имя модели."""
+        model_names = {
+            "openai/gpt-oss-120b": "GPT OSS 120B",
+            "openai/gpt-oss-20b": "GPT OSS 20B",
+            "openai/gpt-oss-safeguard-20b": "GPT OSS Safeguard 20B",
+            "qwen/qwen3-32b": "Qwen 3 32B",
+            "llama-3.1-8b-instant": "Llama 3.1 8B Instant",
+            "llama-3.3-70b-versatile": "Llama 3.3 70B Versatile",
+            "meta-llama/llama-4-maverick-17b-128e-instruct": "Llama 4 Maverick 17B",
+            "meta-llama/llama-4-scout-17b-16e-instruct": "Llama 4 Scout 17B",
+            "meta-llama/llama-guard-4-12b": "Llama Guard 4 12B",
+            "meta-llama/llama-prompt-guard-2-22m": "Llama Prompt Guard 2 22M",
+            "meta-llama/llama-prompt-guard-2-86m": "Llama Prompt Guard 2 86M",
+            "moonshotai/kimi-k2-instruct": "Kimi K2 Instruct",
+            "moonshotai/kimi-k2-instruct-0905": "Kimi K2 Instruct 0905",
+            "allam-2-7b": "Allam 2 7B",
+            "canopylabs/orpheus-arabic-saudi": "Orpheus Arabic Saudi",
+            "groq/compound": "Groq Compound",
+            "groq/compound-mini": "Groq Compound Mini",
+        }
+        return model_names.get(model, model)
+
+    @app_commands.command(description="Показать текущую модель для этого канала")
+    async def get_model(self, interaction: discord.Interaction):
+        """Показать текущую модель GPT для канала."""
+        channel_id = interaction.channel.id
+        model = self._get_channel_model(channel_id)
+        model_display_name = self._get_model_display_name(model)
+
+        await interaction.response.send_message(
+            f"Текущая модель для этого канала: **{model_display_name}**", ephemeral=True
+        )
+
+    @commands.Cog.listener()
+    async def on_message(self, message: Message):
+        if message.author.bot:
+            return
+
+        # Обновить активность канала при любом сообщении (для сброса таймера)
+        if message.content and message.content.strip():
+            channel_id = message.channel.id
+            self._update_channel_activity(channel_id)
+
+        handlers = (
+            self.reply_to_question,
+            self.send_random_phrase,
+            self.reply_to_ping,
+            lambda m: self.send_random_content(m, emoji=False),
+            lambda m: self.send_random_content(m, emoji=True),
+        )
+
+        for handler in handlers:
+            if await handler(message):
+                return
+
+        await self.add_random_reaction(message)
+        self.message_counter += 1

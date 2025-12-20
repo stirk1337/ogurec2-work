@@ -1,6 +1,99 @@
 [project]
-name = "ogurec2-work"
-version = "0.1.0"
-description = "Add your description here"
+name = "ogurec"
+version = "3.0"
+description = "Ogurec-bot"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "aiohttp>=3.13.2",
+    "discord-py>=2.6.4",
+    "loguru>=0.7.3",
+    "pydantic-settings>=2.12.0",
+]
+
+[project.scripts]
+ogurec = "ogurec.cmd.main:main"
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 120
+lint.select = [
+    "ALL",
+]
+lint.ignore = [
+    #### modules
+    "ANN", # flake8-annotations
+    "COM", # flake8-commas
+    "C90", # mccabe complexity
+    "DJ",  # django
+    "EXE", # flake8-executable
+    "T10", # debugger
+    "TID", # flake8-tidy-imports
+
+    #### specific rules
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D105",
+    "D106",
+    "D107",
+    "D200",
+    "D205",
+    "D212",
+    "D400",
+    "D401",
+    "D415",
+    "E402",
+    "E501",
+    "TRY003",
+    "TD002",
+    "TD003",
+    "FIX002",
+    "INP001",
+    "FBT001",
+    "TRY201",
+    "FA102",
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    "S311",
+    "DTZ003",
+    "PLR0913",
+    "W291",
+    "ISC001",
+    "BLE001",
+    "PGH003",
+    "D213",
+    "G004",
+    "D209",
+    "DTZ007",
+    "D202",
+    "Q000",
+    "FA100",
+    "RET504",
+    "PLR2004",
+    "EM101",
+    "PLR0915",
+    "PLR0912",
+    "TC001",
+    "TC002",
+    "FBT003",
+    "DTZ005",
+    "SIM105",
+    "D211",
+    "D203",
+    "PLW1508",
+    "SIM117",
+    "SIM114",
+    "RET505",
+    "EM102",
+    "FBT002",
+    "S101",
+    "S607",
+    "S603",
+    "S104",
+    "FAST002"
+]
