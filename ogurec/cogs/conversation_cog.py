@@ -53,21 +53,21 @@ class ConversationCog(commands.Cog):
     def _roll(*values: int, max_value: int) -> bool:
         return random.randint(1, max_value) in values
 
-    def _get_base_system_message(self, include_mood: bool = False, guild_name: str = None, include_server_info: bool = False) -> dict:
+    def _get_base_system_message(self, include_mood: bool = False, guild_name: str = None) -> dict:
         """Базовое системное сообщение, которое всегда должно быть в начале истории."""
-        content = "Ты Discord бот по имени Ogurec. Ты пишешь от 1 до 10 предложений за 1 ответ. "
+        from datetime import datetime as dt
+        from ogurec.utils import TIME_ZONE
         
-        # С шансом 5% добавляем информацию о сервере (дата и название)
-        if include_server_info:
-            from datetime import datetime as dt
-            from ogurec.utils import TIME_ZONE
-            
-            now = dt.now(TIME_ZONE)
-            current_date = now.strftime("%d.%m.%Y %H:%M")
-            content += f"Текущая дата и время: {current_date}. "
-            
-            if guild_name:
-                content += f"Название сервера: {guild_name}. "
+        now = dt.now(TIME_ZONE)
+        current_date = now.strftime("%d.%m.%Y %H:%M")
+        
+        content = "Ты Discord бот по имени Ogurec. Ты пишешь от 1 до 10 предложений за 1 ответ. "
+        content += f"Текущая дата и время: {current_date}. "
+        
+        if guild_name:
+            content += f"Название сервера: {guild_name}. "
+        
+        content += "Ты знаешь эту информацию о сервере, но используй её только иногда, когда это уместно и естественно. Не упоминай дату и название сервера в каждом ответе. "
 
         if include_mood:
             mood = random.choice(BOT_MOODS)
@@ -82,21 +82,20 @@ class ConversationCog(commands.Cog):
         else:
             return f"<:{emoji.name}:{emoji.id}>"
 
-    def _get_user_info_for_gpt(self, message: Message) -> str:
+    def _get_user_info_for_gpt(self, user) -> str:
         """Получить информацию о пользователе для GPT."""
-        if not message.guild or not message.author:
+        if not user:
             return ""
         
-        user = message.author
         info_parts = []
         
         # Основная информация
-        info_parts.append(f"Тебе пишет пользователь: {user.display_name} (никнейм: {user.name})")
+        info_parts.append(f"Пользователь: {user.display_name} (никнейм: {user.name})")
         
         # Роли пользователя (кроме @everyone)
         roles = [role.name for role in user.roles if role.name != "@everyone" and not role.is_bot_managed()]
         if roles:
-            info_parts.append(f"Роли пользователя: {', '.join(roles)}")
+            info_parts.append(f"Роли: {', '.join(roles)}")
         
         # Активность пользователя (играет, стримит и т.д.)
         if user.activity:
@@ -107,7 +106,27 @@ class ConversationCog(commands.Cog):
             elif isinstance(user.activity, discord.CustomActivity):
                 info_parts.append(f"Кастомный статус: {user.activity.name}")
         
-        return ". ".join(info_parts) + ". Используй эту информацию для более персонализированного и веселого ответа."
+        return ". ".join(info_parts)
+    
+    def _get_mentioned_users_info(self, message: Message) -> str:
+        """Получить информацию о всех упомянутых пользователях в сообщении."""
+        if not message.guild or not message.mentions:
+            return ""
+        
+        mentioned_infos = []
+        for user in message.mentions:
+            # Пропускаем ботов и самого бота
+            if user.bot or user.id == self.bot.user.id:
+                continue
+            
+            user_info = self._get_user_info_for_gpt(user)
+            if user_info:
+                mentioned_infos.append(user_info)
+        
+        if not mentioned_infos:
+            return ""
+        
+        return "Упомянутые пользователи в сообщении: " + ". ".join(mentioned_infos) + ". Ты знаешь эту информацию о них. ВАЖНО: Если в сообщении упоминается пользователь и задается вопрос типа 'кто это', 'кто он', 'что за пользователь' и т.д., то вопрос относится к упомянутому пользователю, а не к автору сообщения. Отвечай про упомянутого пользователя, используя информацию о нём."
 
     def _get_emojis_system_message(self, guild) -> dict:
         """Создает системное сообщение со списком доступных эмодзи на сервере."""
@@ -159,10 +178,9 @@ class ConversationCog(commands.Cog):
         if not has_base_system:
             # 30% шанс выбрать случайное поведение
             include_mood = random.randint(1, 100) <= 30
-            # 5% шанс добавить информацию о сервере (дата и название)
-            include_server_info = random.randint(1, 100) <= 5
-            guild_name = guild.name if guild and include_server_info else None
-            history.insert(0, self._get_base_system_message(include_mood=include_mood, guild_name=guild_name, include_server_info=include_server_info))
+            # Информация о сервере всегда передается (дата и название)
+            guild_name = guild.name if guild else None
+            history.insert(0, self._get_base_system_message(include_mood=include_mood, guild_name=guild_name))
 
         # Добавляем системное сообщение с эмодзи, если это первое пользовательское сообщение
         if not has_emojis_system and guild and is_first_user_message:
@@ -257,14 +275,20 @@ class ConversationCog(commands.Cog):
         # Получить историю для этого канала с системными сообщениями
         history = self._get_channel_history(channel_id)
         
-        # С шансом 5% добавляем информацию о пользователе для более персонализированного ответа
-        if random.randint(1, 100) <= 5:
-            user_info = self._get_user_info_for_gpt(message)
-            if user_info:
-                # Добавляем информацию о пользователе как системное сообщение перед последним пользовательским
-                user_info_message = {"role": "system", "content": user_info}
-                # Вставляем перед последним сообщением пользователя
-                history.insert(-1, user_info_message)
+        # Добавляем информацию об авторе сообщения для более персонализированного ответа (100% шанс)
+        author_info = self._get_user_info_for_gpt(message.author)
+        if author_info:
+            author_info_text = f"Тебе пишет пользователь: {author_info}. Ты знаешь эту информацию о пользователе, но используй её только иногда, когда это уместно и естественно. Не упоминай эту информацию в каждом ответе."
+            author_info_message = {"role": "system", "content": author_info_text}
+            # Вставляем перед последним сообщением пользователя
+            history.insert(-1, author_info_message)
+        
+        # Добавляем информацию о всех упомянутых пользователях
+        mentioned_users_info = self._get_mentioned_users_info(message)
+        if mentioned_users_info:
+            mentioned_info_message = {"role": "system", "content": mentioned_users_info}
+            # Вставляем перед последним сообщением пользователя
+            history.insert(-1, mentioned_info_message)
 
         # Отправляем пустое сообщение-плейсхолдер с ответом на сообщение пользователя
         sent_message = await message.channel.send("💬 ...", reference=message)
@@ -303,7 +327,7 @@ class ConversationCog(commands.Cog):
                     # С шансом 5% отправить случайный стикер с сервера
                     if message.guild and message.guild.stickers and random.randint(1, 100) <= 25:
                         try:
-                            await message.channel.send(stickers=[get_random_sticker(message.guild)], reference=message)
+                            await message.channel.send(stickers=[get_random_sticker(message.guild)])
                         except Exception:
                             # Игнорируем ошибки при отправке стикера
                             pass
