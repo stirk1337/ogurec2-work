@@ -53,19 +53,21 @@ class ConversationCog(commands.Cog):
     def _roll(*values: int, max_value: int) -> bool:
         return random.randint(1, max_value) in values
 
-    def _get_base_system_message(self, include_mood: bool = False, guild_name: str = None) -> dict:
+    def _get_base_system_message(self, include_mood: bool = False, guild_name: str = None, include_server_info: bool = False) -> dict:
         """Базовое системное сообщение, которое всегда должно быть в начале истории."""
-        from datetime import datetime as dt
-        from ogurec.utils import TIME_ZONE
-        
-        now = dt.now(TIME_ZONE)
-        current_date = now.strftime("%d.%m.%Y %H:%M")
-        
         content = "Ты Discord бот по имени Ogurec. Ты пишешь от 1 до 10 предложений за 1 ответ. "
-        content += f"Текущая дата и время: {current_date}. "
         
-        if guild_name:
-            content += f"Название сервера: {guild_name}. "
+        # С шансом 5% добавляем информацию о сервере (дата и название)
+        if include_server_info:
+            from datetime import datetime as dt
+            from ogurec.utils import TIME_ZONE
+            
+            now = dt.now(TIME_ZONE)
+            current_date = now.strftime("%d.%m.%Y %H:%M")
+            content += f"Текущая дата и время: {current_date}. "
+            
+            if guild_name:
+                content += f"Название сервера: {guild_name}. "
 
         if include_mood:
             mood = random.choice(BOT_MOODS)
@@ -157,8 +159,10 @@ class ConversationCog(commands.Cog):
         if not has_base_system:
             # 30% шанс выбрать случайное поведение
             include_mood = random.randint(1, 100) <= 30
-            guild_name = guild.name if guild else None
-            history.insert(0, self._get_base_system_message(include_mood=include_mood, guild_name=guild_name))
+            # 5% шанс добавить информацию о сервере (дата и название)
+            include_server_info = random.randint(1, 100) <= 5
+            guild_name = guild.name if guild and include_server_info else None
+            history.insert(0, self._get_base_system_message(include_mood=include_mood, guild_name=guild_name, include_server_info=include_server_info))
 
         # Добавляем системное сообщение с эмодзи, если это первое пользовательское сообщение
         if not has_emojis_system and guild and is_first_user_message:
@@ -361,7 +365,7 @@ class ConversationCog(commands.Cog):
 
     def _get_channel_model(self, channel_id: int) -> str:
         """Получить модель для канала или вернуть дефолтную."""
-        return self.channel_models.get(channel_id, "openai/gpt-oss-120b")
+        return self.channel_models.get(channel_id, "qwen/qwen3-32b")
 
     @app_commands.command(description="Сбросить историю чата для этого канала")
     async def reset_history(self, interaction: discord.Interaction):
